@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import json
 import argparse
 import subprocess
@@ -9,18 +8,15 @@ import re
 from typing import List, Dict, Any, Tuple
 import math
 
-def load_qa_pairs(input_file: str) -> List[Dict[str, str]]:
-    """Load question-answer pairs from JSON file."""
+def load(input_file: str) -> List[Dict[str, str]]:
     with open(input_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
     return data.get("qa_pairs", [])
 
-def create_batches(qa_pairs: List[Dict[str, str]], batch_size: int) -> List[List[Dict[str, str]]]:
-    """Split the question-answer pairs into batches."""
-    return [qa_pairs[i:i + batch_size] for i in range(0, len(qa_pairs), batch_size)]
+def batch(qa_pairs: List[Dict[str, str]], batch_size: int) -> List[List[Dict[str, str]]]:
+    return [qa_pairs[i:i + batch_size] for i in range(0, len(qa_pairs), batch_size)] #divide questions into batches to avoid overwhelming LLM
 
-def create_prompt(questions: List[Dict[str, str]], all_answers: List[str]) -> str:
-    """Create a Norwegian prompt for the LLM."""
+def prompt(questions: List[Dict[str, str]], all_answers: List[str]) -> str:
     shuffled_answers = all_answers.copy()
     random.shuffle(shuffled_answers)
     
@@ -55,11 +51,6 @@ VIKTIGE REGLER:
 ## Spørsmål:
 """
     
-    for i, qa in enumerate(questions, 1):
-        # Strip numbers from the beginning of questions
-        clean_question = re.sub(r'^\d+\.\s*', '', qa['question'])
-        prompt += f"{i}. {clean_question}\n"
-    
     prompt += "\n## Mulige svar (disse er stokket):\n"
     for i, answer in enumerate(shuffled_answers, 1):
         prompt += f"{i}. {answer}\n"
@@ -69,8 +60,7 @@ VIKTIGE REGLER:
     
     return prompt, shuffled_answers
 
-def run_llm_command(command: str, prompt: str) -> str:
-    """Execute LLM command and return the output."""
+def run_command(command: str, prompt: str) -> str:
     with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8') as temp:
         temp.write(prompt)
         temp_path = temp.name
@@ -86,9 +76,7 @@ def run_llm_command(command: str, prompt: str) -> str:
     finally:
         os.unlink(temp_path)
 
-def extract_json_from_response(response: str) -> Dict[str, Any]:
-    """Extract JSON from the LLM response."""
-    # Find json block between ```json and ```
+def extract_json(response: str) -> Dict[str, Any]:
     json_start = response.find("```json")
     if json_start == -1:
         json_start = response.find("```")
@@ -101,8 +89,6 @@ def extract_json_from_response(response: str) -> Dict[str, Any]:
                 return json.loads(response[json_start:json_end+1])
             except json.JSONDecodeError:
                 pass
-    
-    # Try to find any JSON object in the response
     try:
         import re
         json_pattern = r'\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}'
@@ -112,61 +98,42 @@ def extract_json_from_response(response: str) -> Dict[str, Any]:
     except (json.JSONDecodeError, re.error):
         pass
     
-    # If all else fails, return empty dict
-    print("Warning: Could not extract JSON from response")
+    print("Could not extract JSON")
     print("Raw response:", response)
     return {"svar": []}
 
-def normalize_answer(text: str) -> str:
-    """Normalize answer text for comparison."""
-    # Remove leading numbers (like "13. ")
+def normalize(text: str) -> str:
     text = re.sub(r'^\d+\.\s*', '', text)
-    
-    # Remove trailing punctuation
     text = re.sub(r'[.,;:!?]+$', '', text)
-    
-    # Strip whitespace and convert to lowercase
     return text.strip().lower()
 
-def clean_question(text: str) -> str:
-    """Remove numbering from the beginning of questions."""
+def clean(text: str) -> str:
     return re.sub(r'^\d+\.\s*', '', text)
 
-def process_responses(batch_questions: List[Dict[str, str]], 
+def process(batch_questions: List[Dict[str, str]], 
                      batch_responses: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-    """Process LLM responses and compute accuracy."""
     results = []
     
-    # Create a mapping from questions to their correct answers
-    # Clean questions by removing leading numbers
     question_to_correct_answer = {
-        clean_question(qa['question']): qa['answer'] 
+        clean(qa['question']): qa['answer'] 
         for qa in batch_questions
     }
     
-    # Create normalized versions of correct answers for comparison
     normalized_correct_answers = {
-        q: normalize_answer(a) 
+        q: normalize(a) 
         for q, a in question_to_correct_answer.items()
     }
     
     for response_item in batch_responses:
-        # Get the question (might have numbers at the beginning)
         raw_question = response_item.get("spørsmål", "")
-        
-        # Clean the question to match our dictionary keys
-        clean_q = clean_question(raw_question)
-        
+        clean_q = clean(raw_question)
         selected_answer = response_item.get("valgt_svar", "")
         
-        # Find correct answer for this question
         correct_answer = question_to_correct_answer.get(clean_q, "")
         
-        # Normalize both answers for comparison
-        normalized_selected = normalize_answer(selected_answer)
+        normalized_selected = normalize(selected_answer)
         normalized_correct = normalized_correct_answers.get(clean_q, "")
         
-        # Check if the normalized answer is correct
         is_correct = normalized_selected == normalized_correct
         
         results.append({
@@ -193,22 +160,14 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Include debug information in output")
     
     args = parser.parse_args()
-    
-    # Set random seed
     random.seed(args.seed)
+    qa_pairs = load(args.input)
     
-    # Load QA pairs
-    qa_pairs = load_qa_pairs(args.input)
-    
-    # Limit to specified number of questions if provided
     if args.num_questions is not None:
         qa_pairs = qa_pairs[:args.num_questions]
     
-    # Extract all answers
     all_answers = [qa['answer'] for qa in qa_pairs]
-    
-    # Split into batches
-    batches = create_batches(qa_pairs, args.batch_size)
+    batches = batch(qa_pairs, args.batch_size)
     
     all_results = []
     total_correct = 0
@@ -218,30 +177,22 @@ def main():
     for i, batch in enumerate(batches, 1):
         print(f"Processing batch {i}/{len(batches)}...")
         
-        # Create prompt for this batch
-        prompt, shuffled_answers = create_prompt(batch, all_answers)
+        prompt, shuffled_answers = prompt(batch, all_answers)
+        llm_response = run_command(args.llm, prompt)
         
-        # Run LLM
-        llm_response = run_llm_command(args.llm, prompt)
-        
-        # Parse response
-        parsed_response = extract_json_from_response(llm_response)
+        parsed_response = extract_json(llm_response)
         batch_responses = parsed_response.get("svar", [])
         
-        # Process results
-        batch_results = process_responses(batch, batch_responses)
+        batch_results = process(batch, batch_responses)
         all_results.extend(batch_results)
         
-        # Count correct answers
         batch_correct = sum(1 for r in batch_results if r.get("is_correct", False))
         total_correct += batch_correct
         
         print(f"Batch {i} results: {batch_correct}/{len(batch)} correct")
     
-    # Calculate overall accuracy
-    accuracy = total_correct / len(qa_pairs) if qa_pairs else 0
+    accuracy = total_correct/len(qa_pairs) if qa_pairs else 0
     
-    # Prepare final results
     final_results = {
         "results": [{
             "question": r["question"],
@@ -254,7 +205,7 @@ def main():
         "accuracy": accuracy
     }
     
-    # Include debug information if requested
+    #include normalized answers if desired
     if args.debug:
         for i, r in enumerate(all_results):
             final_results["results"][i].update({
@@ -262,7 +213,6 @@ def main():
                 "normalized_correct": r.get("normalized_correct", "")
             })
     
-    # Save results
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(final_results, f, ensure_ascii=False, indent=2)
     
