@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --job-name="groq-quiz-$MODEL" 
+#SBATCH --account=<abeerk>  # Replace with your specific account
+#SBATCH --nodes=1
+#SBATCH --ntasks=1  # Only need 1 task
+#SBATCH --cpus-per-task=1  # Only need 1 CPU
+#SBATCH --mem=4G  
+#SBATCH --time=2-00:00:00  # 2 days time limit
+#SBATCH --output=groq-quiz-%j-%x.out  # Output file with job ID and name
+#SBATCH --error=groq-quiz-%j-%x.err   # Error file with job ID and name
+#SBATCH --partition=CPUQ
+
+# Load required modules
+module load Python/3.8.6-GCCcore-10.2.0
+
+# Set environment variable for Groq API key
+export GROQ_API_KEY="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"
+
+# Run the script with specified model
+python quiz.py \
+  --input qa_pairs.json \
+  --output ${MODEL}_results.json \
+  --model ${MODEL} \
+  --batch-size 5 \
+  --rate-limit-delay 15 \
+  --checkpoint \
+  --checkpoint-interval 5
